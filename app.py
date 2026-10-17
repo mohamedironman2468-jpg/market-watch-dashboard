@@ -1,8 +1,11 @@
 
 import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
-import streamlit as st
 import pandas as pd
+import requests
+import streamlit as st
 from groq import Groq
 
 st.set_page_config(
@@ -11,119 +14,179 @@ st.set_page_config(
     layout="wide",
 )
 
+API_URL = "https://data-api.binance.vision/api/v3/ticker/price"
+
 st.title("📈 Market Watch")
-st.caption(
-    "Read-only market monitor | Sample data for testing"
-)
+st.caption("Live public market data · Read-only · No trading")
 
 st.info(
-    "DEMO MODE: These are fictional prices, not live market data. "
-    "This app cannot place trades."
+    "This dashboard displays exchange price quotes for monitoring "
+    "and learning. It does not execute trades or guarantee that "
+    "price differences can be exploited."
 )
 
-# Sample data to test the dashboard.
-# We will replace this with live public prices later.
-data = pd.DataFrame({
-    "Market": ["Market A", "Market B", "Market C"],
-    "Price": [100.00, 100.40, 99.85],
-})
+# Refresh the page periodically.
+st.markdown(
+    """
+    <meta http-equiv="refresh" content="15">
+    """,
+    unsafe_allow_html=True,
+)
 
-st.subheader("Market overview")
+symbols = ["BTCUSDT", "BTCUSDC", "ETHUSDT"]
 
-col1, col2, col3 = st.columns(3)
+@st.cache_data(ttl=10, show_spinner=False)
+def fetch_prices():
+    results = []
+    errors = []
 
-with col1:
-    st.metric("Markets monitored", len(data))
+    for symbol in symbols:
+        try:
+            response = requests.get(
+                API_URL,
+                params={"symbol": symbol},
+                timeout=8,
+            )
+            response.raise_for_status()
+            item = response.json()
 
-with col2:
-    st.metric("Highest sample price", f"${data['Price'].max():.2f}")
+            results.append({
+                "Symbol": item["symbol"],
+                "Price": float(item["price"]),
+            })
 
-with col3:
-    st.metric("Lowest sample price", f"${data['Price'].min():.2f}")
+        except (requests.RequestException, ValueError, KeyError) as exc:
+            errors.append(f"{symbol}: {exc}")
 
-st.subheader("Prices")
+    return results, errors
+
+
+with st.spinner("Fetching public market prices..."):
+    results, errors = fetch_prices()
+
+if errors:
+    st.warning(
+        "Some prices could not be retrieved. "
+        "Check your connection or try again later.\n\n"
+        + "\n".join(errors)
+    )
+
+if not results:
+    st.error(
+        "No market prices were retrieved. "
+        "The dashboard cannot show a live comparison right now."
+    )
+    st.stop()
+
+data = pd.DataFrame(results)
+
+updated_at = datetime.now(
+    ZoneInfo("UTC")
+).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+st.caption(f"Last successful page fetch: {updated_at}")
+
+st.subheader("Current prices")
+
+cols = st.columns(len(data))
+
+for col, (_, row) in zip(cols, data.iterrows()):
+    with col:
+        st.metric(
+            label=row["Symbol"],
+            value=f"${row['Price']:,.2f}",
+        )
+
+st.dataframe(
+    data,
+    hide_index=True,
+    use_container_width=True,
+)
+
+st.subheader("Price comparison")
 
 st.bar_chart(
     data,
-    x="Market",
+    x="Symbol",
     y="Price",
 )
 
-st.dataframe(data, hide_index=True, use_container_width=True)
-
-# Compare the highest and lowest sample prices.
-highest = data.loc[data["Price"].idxmax()]
-lowest = data.loc[data["Price"].idxmin()]
-
-difference = highest["Price"] - lowest["Price"]
-percentage = difference / lowest["Price"] * 100
-
-st.subheader("Price difference scanner")
-
-threshold = st.slider(
-    "Alert threshold (%)",
-    min_value=0.05,
-    max_value=2.0,
-    value=0.30,
-    step=0.05,
+st.caption(
+    "Quotes are from different trading pairs. USDT and USDC "
+    "are separate assets, and ETH is not the same asset as BTC. "
+    "Do not interpret these prices as a direct arbitrage opportunity."
 )
 
-st.metric(
-    "Difference between highest and lowest",
-    f"{percentage:.3f}%",
-    help="A raw price difference, before costs. Not proof of a profitable trade.",
-)
+st.subheader("Compare the same asset")
 
-if percentage >= threshold:
-    st.warning(
-        f"Difference exceeds your {threshold:.2f}% threshold. "
-        "This is a signal to investigate, not a trading recommendation."
+btc_quotes = data[
+    data["Symbol"].isin(["BTCUSDT", "BTCUSDC"])
+]
+
+if len(btc_quotes) == 2:
+    prices = dict(
+        zip(btc_quotes["Symbol"], btc_quotes["Price"])
+    )
+
+    usdt = prices["BTCUSDT"]
+    usdc = prices["BTCUSDC"]
+
+    difference = usdc - usdt
+    pct = difference / usdt * 100 if usdt else 0
+
+    c1, c2, c3 = st.columns(3)
+
+    c1.metric("BTC/USDT", f"${usdt:,.2f}")
+    c2.metric("BTC/USDC", f"${usdc:,.2f}")
+    c3.metric("Quote difference", f"{pct:+.4f}%")
+
+    st.write(
+        "This is a raw quote comparison, not a confirmed profit. "
+        "Stablecoin prices can differ, and the quote alone does "
+        "not account for liquidity, fees or execution."
     )
 else:
-    st.success("The sample difference is below your alert threshold.")
+    st.warning(
+        "Both BTC trading pairs must load before comparing them."
+    )
 
 st.subheader("AI explanation")
 
-st.write(
-    "Ask Groq to explain the sample results in plain English. "
-    "AI explanations are optional."
-)
-
-if st.button("Explain these results with AI"):
+if st.button("Explain the current readings"):
     api_key = os.environ.get("GROQ_API_KEY")
 
     if not api_key:
         st.warning(
-            "Groq is not configured yet. Follow Step 5 to add your "
-            "API key securely in Streamlit Secrets."
+            "Add GROQ_API_KEY under your Streamlit app's Secrets "
+            "settings to enable AI explanations."
         )
     else:
         try:
             client = Groq(api_key=api_key)
 
-            with st.spinner("Preparing explanation..."):
+            with st.spinner("Explaining the readings..."):
                 response = client.chat.completions.create(
                     model="llama-3.3-70b-versatile",
                     messages=[
                         {
                             "role": "system",
                             "content": (
-                                "You explain market data for beginners. "
-                                "Use only the supplied data. Explain "
-                                "uncertainty and costs. Never claim a "
-                                "profit is guaranteed or recommend "
-                                "placing a trade. The data may be fictional."
+                                "Explain supplied market data for a "
+                                "beginner. Do not invent facts, prices "
+                                "or timestamps. Distinguish raw price "
+                                "differences from actual profit. "
+                                "Mention uncertainty and relevant "
+                                "costs. Do not recommend trades."
                             ),
                         },
                         {
                             "role": "user",
                             "content": (
-                                f"Sample market prices: "
-                                f"{data.to_dict(orient='records')}. "
-                                f"Highest-lowest difference: "
-                                f"{percentage:.3f}%. "
-                                f"Alert threshold: {threshold:.2f}%. "
-                                "Explain what these figures mean."
+                                "Explain these public market quotes "
+                                "in plain English:\n"
+                                + data.to_json(orient="records")
+                                + "\nExplain what can and cannot be "
+                                "concluded from this snapshot."
                             ),
                         },
                     ],
@@ -131,18 +194,13 @@ if st.button("Explain these results with AI"):
                     max_tokens=300,
                 )
 
-            st.markdown(
-                response.choices[0].message.content
-            )
+            st.write(response.choices[0].message.content)
 
-        except Exception as error:
-            st.error(
-                "The AI request failed. Check your Groq configuration "
-                "and try again. Technical details: "
-                + str(error)
-            )
+        except Exception as exc:
+            st.error(f"AI explanation failed: {exc}")
 
 st.divider()
 st.caption(
-    "Version 1 | Sample data only | No trading or order execution"
+    "Read-only educational monitor. No account access, "
+    "private keys, or order execution."
 )
