@@ -165,8 +165,9 @@ if st.button("Explain the current readings"):
             client = Groq(api_key=api_key)
 
             with st.spinner("Explaining the readings..."):
-                response = client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
+                response = client.chat.completions.create( 
+                        model="openai/gpt-oss-120b",
+
                     messages=[
                         {
                             "role": "system",
